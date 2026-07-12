@@ -129,3 +129,34 @@ test "HashContext works as a std.HashMap context" {
     try map.put(a, 1);
     try testing.expectEqual(@as(?i32, 1), map.get(b));
 }
+
+// Regression: discriminated unions (e.g. a JSValue-shaped tagged union used
+// as a Map/Set key type) need the same duck-typed eql/hash support structs
+// already have -- this is what z-map/z-set need for ZMap(JSValue, JSValue).
+const EqUnion = union(enum) {
+    a: i32,
+    b: []const u8,
+
+    pub fn eql(x: EqUnion, y: EqUnion) bool {
+        return std.meta.eql(x, y);
+    }
+    pub fn hash(self: EqUnion) u64 {
+        return switch (self) {
+            .a => |v| @as(u64, @bitCast(@as(i64, v))),
+            .b => |s| std.hash.Wyhash.hash(0, s),
+        };
+    }
+};
+
+test "union types support the same custom eql/hash duck-typing as structs" {
+    try testing.expect(equality.hasCustomEql(EqUnion));
+    try testing.expect(equality.hasCustomHash(EqUnion));
+
+    const a1 = EqUnion{ .a = 1 };
+    const a2 = EqUnion{ .a = 1 };
+    const b1 = EqUnion{ .b = "x" };
+
+    try testing.expect(equality.strictEquals(EqUnion, a1, a2));
+    try testing.expect(!equality.strictEquals(EqUnion, a1, b1));
+    try testing.expectEqual(equality.hash(EqUnion, a1), equality.hash(EqUnion, a2));
+}

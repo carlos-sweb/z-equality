@@ -11,7 +11,7 @@ pub fn strictEquals(comptime T: type, a: T, b: T) bool {
         },
         .optional => optionalEquals(T, a, b, false),
         .array => |info| arrayEquals(info.child, T, a, b, false),
-        .@"struct" => structEquals(T, a, b),
+        .@"struct", .@"union" => containerEquals(T, a, b),
         else => @compileError("zequality: type '" ++ @typeName(T) ++
             "' does not support equality comparison. Provide a `pub fn eql(a: " ++
             @typeName(T) ++ ", b: " ++ @typeName(T) ++ ") bool` method on it."),
@@ -57,25 +57,33 @@ fn optionalEquals(comptime T: type, a: T, b: T, comptime same_value_zero: bool) 
     return if (same_value_zero) sameValueZero(Child, a.?, b.?) else strictEquals(Child, a.?, b.?);
 }
 
-/// Duck-typing: if T declares `pub fn eql(a: T, b: T) bool`, it is used.
-/// Otherwise falls back to std.meta.eql field-by-field (note: slice fields inside
-/// the struct compare by pointer identity unless the struct provides its own eql).
-fn structEquals(comptime T: type, a: T, b: T) bool {
+/// Duck-typing: if T (a struct or a tagged union — e.g. a JSValue-shaped
+/// discriminated union) declares `pub fn eql(a: T, b: T) bool`, it is used.
+/// Otherwise falls back to std.meta.eql field-by-field/tag-and-payload (note:
+/// slice fields inside compare by pointer identity unless T provides its own eql).
+fn containerEquals(comptime T: type, a: T, b: T) bool {
     if (comptime hasCustomEql(T)) {
         return T.eql(a, b);
     }
     return std.meta.eql(a, b);
 }
 
+fn isContainerType(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct", .@"union" => true,
+        else => false,
+    };
+}
+
 pub fn hasCustomEql(comptime T: type) bool {
-    if (@typeInfo(T) != .@"struct") return false;
+    if (!isContainerType(T)) return false;
     if (!@hasDecl(T, "eql")) return false;
     const fn_info = @typeInfo(@TypeOf(@field(T, "eql")));
     return fn_info == .@"fn" and fn_info.@"fn".params.len == 2;
 }
 
 pub fn hasCustomHash(comptime T: type) bool {
-    if (@typeInfo(T) != .@"struct") return false;
+    if (!isContainerType(T)) return false;
     if (!@hasDecl(T, "hash")) return false;
     const fn_info = @typeInfo(@TypeOf(@field(T, "hash")));
     return fn_info == .@"fn" and fn_info.@"fn".params.len == 1;
@@ -104,7 +112,7 @@ pub fn hash(comptime T: type, value: T) u64 {
         },
         .array => |info| hashSlice(info.child, &value),
         .optional => |info| if (value) |v| hash(info.child, v) else 0x9e3779b97f4a7c15,
-        .@"struct" => hashStruct(T, value),
+        .@"struct", .@"union" => containerHash(T, value),
         else => @compileError("zequality: type '" ++ @typeName(T) ++
             "' does not support hashing. Provide a `pub fn hash(self: " ++
             @typeName(T) ++ ") u64` method on it."),
@@ -137,13 +145,13 @@ fn hashSlice(comptime E: type, value: []const E) u64 {
     return hasher.final();
 }
 
-/// Duck-typing mirrors structEquals: if T declares `pub fn hash(self: T) u64`,
+/// Duck-typing mirrors containerEquals: if T declares `pub fn hash(self: T) u64`,
 /// it is used. Otherwise falls back to std.hash.autoHash field-by-field
-/// (consistent with structEquals's std.meta.eql fallback, since both are
+/// (consistent with containerEquals's std.meta.eql fallback, since both are
 /// field-wise and agree with each other). If T provides a custom eql() but no
 /// matching hash(), that's a correctness footgun for HashMap-backed uses
 /// (equal-by-eql values could hash differently) — caught here at comptime.
-fn hashStruct(comptime T: type, value: T) u64 {
+fn containerHash(comptime T: type, value: T) u64 {
     if (comptime hasCustomEql(T)) {
         if (!comptime hasCustomHash(T)) {
             @compileError("zequality: type '" ++ @typeName(T) ++

@@ -13,7 +13,7 @@ Shared ECMA-262 **Strict Equality Comparison** / **SameValueZero** / content-has
 - `HashContext(comptime T)` — `std.HashMap`-compatible context (2-arg `eql`) wrapping `sameValueZero`/`hash`.
 - `hasCustomEql(comptime T) bool` / `hasCustomHash(comptime T) bool` — duck-typing checks for a struct's own `eql`/`hash` methods.
 
-Supports `int`/`bool`/`float`/`enum`/`optional`/`array`/slice (`[]const u8` and others, by content)/`struct` (via a custom `eql`/`hash` pair, or field-wise fallback). Structs with a custom `eql()` but no matching `hash()` are a compile error — required together for `HashMap`-backed correctness.
+Supports `int`/`bool`/`float`/`enum`/`optional`/`array`/slice (`[]const u8` and others, by content)/`struct`/**tagged union** (via a custom `eql`/`hash` pair, or field-wise/tag-and-payload fallback via `std.meta.eql`). A container type with a custom `eql()` but no matching `hash()` is a compile error — required together for `HashMap`-backed correctness. Tagged-union support exists specifically so a discriminated union like [z-value](https://github.com/carlos-sweb/z-value)'s `JSValue` can be used as a `ZMap`/`ZSet` key/value type: it just needs to expose its own `eql(a: T, b: T) bool` / `hash(self: T) u64`, and the generic machinery here picks them up the same way it already does for structs.
 
 ## Usage
 
