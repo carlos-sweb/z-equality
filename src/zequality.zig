@@ -1,6 +1,23 @@
+//! Equality and hashing helpers for the z-* micro-library ecosystem.
+//!
+//! Import this module with `const zequality = @import("zequality");`.
+//! Scalars follow Strict Equality or SameValueZero numeric rules. Arrays and
+//! slices compare by content, and ordinary pointers compare by address.
+//! Structs and tagged unions delegate to public custom methods or std.meta.eql;
+//! that fallback compares slice fields by pointer and does not normalize NaN.
+//! Hashes are intended for in-memory containers, not cryptography or persistence.
+//! See each function for the current limitations of the generic fallback.
+
 const std = @import("std");
 
 /// Strict Equality Comparison (ECMA262 ===): NaN !== NaN, +0 === -0.
+/// `T` is the compile-time type of both operands. Scalars compare directly;
+/// optionals, arrays and slices recurse, with early exit on a difference.
+/// Structs/tagged unions use a public `eql(a: T, b: T) bool` when detected,
+/// otherwise std.meta.eql. This structural extension is not JavaScript object
+/// identity. Untagged unions need a custom method; unsupported types fail at
+/// compile time. A custom comparator controls its own floating-point semantics.
+/// Example: `strictEquals(i32, 5, 5)` returns true.
 pub fn strictEquals(comptime T: type, a: T, b: T) bool {
     return switch (@typeInfo(T)) {
         .int, .bool, .comptime_int, .@"enum" => a == b,
@@ -20,6 +37,10 @@ pub fn strictEquals(comptime T: type, a: T, b: T) bool {
 
 /// SameValueZero (ECMA262): NaN equals NaN, +0 equals -0. Used by Array.includes(),
 /// and by Map/Set key comparison.
+/// `T` is the compile-time operand type. NaN handling recurses through optionals,
+/// arrays and slices, but structs/unions retain strictEquals's custom/fallback
+/// semantics. A plain struct containing NaN therefore does not equal itself.
+/// Example: `sameValueZero(f64, std.math.nan(f64), std.math.nan(f64))` is true.
 pub fn sameValueZero(comptime T: type, a: T, b: T) bool {
     return switch (@typeInfo(T)) {
         .float, .comptime_float => (a == b) or (std.math.isNan(a) and std.math.isNan(b)),
@@ -75,18 +96,26 @@ fn isContainerType(comptime T: type) bool {
     };
 }
 
+/// Returns whether `T` is a struct/union with a public function named `eql`
+/// taking two parameters. Parameter types, return type and genericity are not
+/// validated; true does not guarantee that `T.eql(a, b)` is callable.
+/// Used at compile time by the equality and hashing dispatch.
 pub fn hasCustomEql(comptime T: type) bool {
-    if (!isContainerType(T)) return false;
+    if (comptime !isContainerType(T)) return false;
     if (!@hasDecl(T, "eql")) return false;
     const fn_info = @typeInfo(@TypeOf(@field(T, "eql")));
-    return fn_info == .@"fn" and fn_info.@"fn".params.len == 2;
+    return fn_info == .@"fn" and fn_info.@"fn".param_types.len == 2;
 }
 
+/// Returns whether `T` is a struct/union with a public function named `hash`
+/// taking one parameter. Parameter types, return type and genericity are not
+/// validated. The current hash dispatch uses this method only when a matching
+/// custom eql is also present. Other types return false.
 pub fn hasCustomHash(comptime T: type) bool {
-    if (!isContainerType(T)) return false;
+    if (comptime !isContainerType(T)) return false;
     if (!@hasDecl(T, "hash")) return false;
     const fn_info = @typeInfo(@TypeOf(@field(T, "hash")));
-    return fn_info == .@"fn" and fn_info.@"fn".params.len == 1;
+    return fn_info == .@"fn" and fn_info.@"fn".param_types.len == 1;
 }
 
 /// Content hash consistent with sameValueZero: values equal under
@@ -94,6 +123,14 @@ pub fn hasCustomHash(comptime T: type) bool {
 /// require eql(a,b) => hash(a)==hash(b). Used by ZArray.unique()/groupBy(),
 /// and by Map/Set key hashing, so that []const u8 and other slices hash by
 /// content instead of pointer identity.
+/// `T` is the compile-time type of `value`. Uses Wyhash with seed zero;
+/// optional null has a fixed hash, and ordinary pointers hash their address.
+/// Custom eql requires custom hash when hashing is instantiated. The container
+/// fallback uses std.hash.autoHash, which rejects float fields and slice fields.
+/// Use concrete numeric types: comptime_int/comptime_float hashing is unsupported.
+/// The current f80 path includes integer storage padding; avoid f80 map keys
+/// until that representation is fixed. Hash output is not a stable file format.
+/// Example: `hash([]const u8, "hello")` hashes the string's content.
 pub fn hash(comptime T: type, value: T) u64 {
     return switch (@typeInfo(T)) {
         .int, .bool, .comptime_int, .@"enum" => blk: {
@@ -120,7 +157,7 @@ pub fn hash(comptime T: type, value: T) u64 {
 }
 
 fn hashFloat(comptime T: type, value: T) u64 {
-    const Bits = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const Bits = @Int(.unsigned, @bitSizeOf(T));
     var bits: Bits = @bitCast(value);
     if (std.math.isNan(value)) {
         // SameValueZero treats every NaN payload as equal, so every NaN must
@@ -169,6 +206,12 @@ fn containerHash(comptime T: type, value: T) u64 {
 /// std.HashMap Context adapter (2-arg eql): SameValueZero equality +
 /// content-based hash, for use where std.AutoHashMap's pointer-identity
 /// hashing is wrong (e.g. T == []const u8).
+/// `T` is the compile-time key type. The returned zero-field type exposes
+/// `hash(self, key) u64` and `eql(self, a, b) bool` without allocating memory.
+/// The adapter inherits all hash and sameValueZero limitations; user-defined
+/// methods must satisfy eql(a, b) => hash(a) == hash(b).
+/// Example type: `std.HashMap([]const u8, i32, HashContext([]const u8),
+/// std.hash_map.default_max_load_percentage)`.
 pub fn HashContext(comptime T: type) type {
     return struct {
         pub fn hash(self: @This(), key: T) u64 {

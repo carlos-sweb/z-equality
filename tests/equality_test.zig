@@ -160,3 +160,47 @@ test "union types support the same custom eql/hash duck-typing as structs" {
     try testing.expect(!equality.strictEquals(EqUnion, a1, b1));
     try testing.expectEqual(equality.hash(EqUnion, a1), equality.hash(EqUnion, a2));
 }
+
+test "custom method detection ignores private declarations, non-functions and wrong arity" {
+    const PrivateMethods = struct {
+        fn eql(a: @This(), b: @This()) bool {
+            _ = a;
+            _ = b;
+            return true;
+        }
+        fn hash(self: @This()) u64 {
+            _ = self;
+            return 0;
+        }
+    };
+    const NonFunctions = struct {
+        pub const eql = true;
+        pub const hash = 0;
+    };
+    const WrongArity = struct {
+        pub fn eql(self: @This()) bool {
+            _ = self;
+            return true;
+        }
+        pub fn hash(a: @This(), b: @This()) u64 {
+            _ = a;
+            _ = b;
+            return 0;
+        }
+    };
+
+    inline for (.{ i32, PlainPoint, PrivateMethods, NonFunctions, WrongArity }) |T| {
+        try testing.expect(!equality.hasCustomEql(T));
+        try testing.expect(!equality.hasCustomHash(T));
+    }
+}
+
+test "float hashing preserves SameValueZero across supported widths" {
+    inline for (.{ f16, f32, f64, f80, f128 }) |T| {
+        const nan = std.math.nan(T);
+        try testing.expect(equality.sameValueZero(T, nan, -nan));
+        try testing.expectEqual(equality.hash(T, nan), equality.hash(T, -nan));
+        try testing.expectEqual(equality.hash(T, 0.0), equality.hash(T, -0.0));
+        try testing.expectEqual(equality.hash(T, 1.5), equality.hash(T, 1.5));
+    }
+}

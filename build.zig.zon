@@ -1,13 +1,14 @@
 .{
     .name = .zequality,
     .version = "0.1.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .fingerprint = 0xfa5127543939890c,
     .description = "Shared ECMA-262 Strict Equality / SameValueZero comparison and content hashing for the z-* micro-library ecosystem",
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src/",
+        "tests/",
         "README.md",
     },
     .dependencies = .{},
